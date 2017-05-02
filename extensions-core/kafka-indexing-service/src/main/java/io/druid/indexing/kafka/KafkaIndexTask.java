@@ -354,6 +354,39 @@ public class KafkaIndexTask extends AbstractTask implements ChatHandler
         }
       };
 
+      final TransactionalSegmentPublisher publisher = new TransactionalSegmentPublisher()
+      {
+        @Override
+        public boolean publishSegments(Set<DataSegment> segments, Object commitMetadata) throws IOException
+        {
+          final KafkaPartitions finalPartitions = toolbox.getObjectMapper().convertValue(
+              ((Map) commitMetadata).get(METADATA_NEXT_PARTITIONS),
+              KafkaPartitions.class
+          );
+
+          // Sanity check, we should only be publishing things that match our desired end state.
+          if (!endOffsets.equals(finalPartitions.getPartitionOffsetMap())) {
+            throw new ISE("WTF?! Driver attempted to publish invalid metadata[%s].", commitMetadata);
+          }
+
+          final SegmentTransactionalInsertAction action;
+
+          if (ioConfig.isUseTransaction()) {
+            action = new SegmentTransactionalInsertAction(
+                segments,
+                new KafkaDataSourceMetadata(ioConfig.getStartPartitions()),
+                new KafkaDataSourceMetadata(finalPartitions)
+            );
+          } else {
+            action = new SegmentTransactionalInsertAction(segments, null, null);
+          }
+
+          log.info("Publishing with isTransaction[%s].", ioConfig.isUseTransaction());
+
+          return toolbox.getTaskActionClient().submit(action).isSuccess();
+        }
+      };
+
       Set<Integer> assignment = assignPartitionsAndSeekToNext(consumer, topic);
 
       // Main loop.
@@ -425,8 +458,10 @@ public class KafkaIndexTask extends AbstractTask implements ChatHandler
                   final SegmentIdentifier identifier = driver.add(
                       row,
                       sequenceNames.get(record.partition()),
-                      committerSupplier
-                  );
+                      committerSupplier,
+                      publisher,
+                      false
+                  ).lhs;
 
                   if (identifier == null) {
                     // Failure to allocate segment puts determinism at risk, bail out to be safe.
@@ -479,40 +514,7 @@ public class KafkaIndexTask extends AbstractTask implements ChatHandler
         status = Status.PUBLISHING;
       }
 
-      final TransactionalSegmentPublisher publisher = new TransactionalSegmentPublisher()
-      {
-        @Override
-        public boolean publishSegments(Set<DataSegment> segments, Object commitMetadata) throws IOException
-        {
-          final KafkaPartitions finalPartitions = toolbox.getObjectMapper().convertValue(
-              ((Map) commitMetadata).get(METADATA_NEXT_PARTITIONS),
-              KafkaPartitions.class
-          );
-
-          // Sanity check, we should only be publishing things that match our desired end state.
-          if (!endOffsets.equals(finalPartitions.getPartitionOffsetMap())) {
-            throw new ISE("WTF?! Driver attempted to publish invalid metadata[%s].", commitMetadata);
-          }
-
-          final SegmentTransactionalInsertAction action;
-
-          if (ioConfig.isUseTransaction()) {
-            action = new SegmentTransactionalInsertAction(
-                segments,
-                new KafkaDataSourceMetadata(ioConfig.getStartPartitions()),
-                new KafkaDataSourceMetadata(finalPartitions)
-            );
-          } else {
-            action = new SegmentTransactionalInsertAction(segments, null, null);
-          }
-
-          log.info("Publishing with isTransaction[%s].", ioConfig.isUseTransaction());
-
-          return toolbox.getTaskActionClient().submit(action).isSuccess();
-        }
-      };
-
-      final SegmentsAndMetadata published = driver.finish(publisher, committerSupplier.get());
+      final SegmentsAndMetadata published = driver.publishAndWaitHandoff(publisher, committerSupplier.get());
       if (published == null) {
         throw new ISE("Transaction failure publishing segments, aborting");
       } else {
@@ -852,6 +854,7 @@ public class KafkaIndexTask extends AbstractTask implements ChatHandler
         new ActionBasedUsedSegmentChecker(toolbox.getTaskActionClient()),
         toolbox.getObjectMapper(),
         tuningConfig.getMaxRowsPerSegment(),
+        Long.MAX_VALUE, // KafkaIndexTask doesn't support this parameter yet
         tuningConfig.getHandoffConditionTimeout(),
         metrics
     );

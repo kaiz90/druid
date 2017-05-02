@@ -32,10 +32,8 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
 import com.google.common.hash.HashFunction;
 import com.google.common.hash.Hashing;
 import com.google.common.io.Files;
@@ -44,9 +42,7 @@ import io.druid.data.input.Committer;
 import io.druid.data.input.Firehose;
 import io.druid.data.input.FirehoseFactory;
 import io.druid.data.input.InputRow;
-import io.druid.data.input.Rows;
 import io.druid.guice.annotations.Smile;
-import io.druid.hll.HyperLogLogCollector;
 import io.druid.indexing.appenderator.ActionBasedSegmentAllocator;
 import io.druid.indexing.appenderator.ActionBasedUsedSegmentChecker;
 import io.druid.indexing.common.TaskLock;
@@ -58,8 +54,7 @@ import io.druid.indexing.common.actions.SegmentTransactionalInsertAction;
 import io.druid.indexing.common.actions.TaskActionClient;
 import io.druid.indexing.firehose.IngestSegmentFirehoseFactory;
 import io.druid.java.util.common.ISE;
-import io.druid.java.util.common.granularity.Granularity;
-import io.druid.java.util.common.guava.Comparators;
+import io.druid.java.util.common.Pair;
 import io.druid.java.util.common.logger.Logger;
 import io.druid.java.util.common.parsers.ParseException;
 import io.druid.query.DruidMetrics;
@@ -85,10 +80,9 @@ import io.druid.segment.realtime.plumber.Committers;
 import io.druid.segment.realtime.plumber.NoopSegmentHandoffNotifierFactory;
 import io.druid.timeline.DataSegment;
 import io.druid.timeline.partition.HashBasedNumberedShardSpec;
+import io.druid.timeline.partition.LinearShardSpec;
 import io.druid.timeline.partition.NoneShardSpec;
-import io.druid.timeline.partition.NumberedShardSpec;
 import io.druid.timeline.partition.ShardSpec;
-import io.druid.timeline.partition.ShardSpecLookup;
 import org.codehaus.plexus.util.FileUtils;
 import org.joda.time.DateTime;
 import org.joda.time.Interval;
@@ -97,10 +91,14 @@ import org.joda.time.Period;
 import javax.annotation.Nullable;
 import java.io.File;
 import java.io.IOException;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.SortedSet;
+import java.util.stream.Collectors;
 
 public class IndexTask extends AbstractTask
 {
@@ -179,12 +177,12 @@ public class IndexTask extends AbstractTask
       ((IngestSegmentFirehoseFactory) firehoseFactory).setTaskToolbox(toolbox);
     }
 
-    final Map<Interval, List<ShardSpec>> shardSpecs = determineShardSpecs(toolbox, firehoseFactory, firehoseTempDir);
+    final ShardSpecs shardSpecs = determineShardSpecs(toolbox, firehoseFactory, firehoseTempDir);
 
     final String version;
     final DataSchema dataSchema;
     if (determineIntervals) {
-      Interval interval = JodaUtils.umbrellaInterval(shardSpecs.keySet());
+      Interval interval = JodaUtils.umbrellaInterval(shardSpecs.getIntervals());
       TaskLock lock = toolbox.getTaskActionClient().submit(new LockAcquireAction(interval));
       version = lock.getVersion();
       dataSchema = ingestionSchema.getDataSchema().withGranularitySpec(
@@ -192,7 +190,7 @@ public class IndexTask extends AbstractTask
                          .getGranularitySpec()
                          .withIntervals(
                              JodaUtils.condenseIntervals(
-                                 shardSpecs.keySet()
+                                 shardSpecs.getIntervals()
                              )
                          )
       );
@@ -217,7 +215,7 @@ public class IndexTask extends AbstractTask
    * Determines the number of shards for each interval using a hash of queryGranularity timestamp + all dimensions (i.e
    * hash-based partitioning). In the future we may want to also support single-dimension partitioning.
    */
-  private Map<Interval, List<ShardSpec>> determineShardSpecs(
+  private ShardSpecs determineShardSpecs(
       final TaskToolbox toolbox,
       final FirehoseFactory firehoseFactory,
       final File firehoseTempDir
@@ -225,23 +223,42 @@ public class IndexTask extends AbstractTask
   {
     final ObjectMapper jsonMapper = toolbox.getObjectMapper();
     final GranularitySpec granularitySpec = ingestionSchema.getDataSchema().getGranularitySpec();
-    final Granularity queryGranularity = granularitySpec.getQueryGranularity();
-    final boolean determineNumPartitions = ingestionSchema.getTuningConfig().getNumShards() == null;
-    final boolean determineIntervals = !ingestionSchema.getDataSchema()
-                                                       .getGranularitySpec()
-                                                       .bucketIntervals()
-                                                       .isPresent();
+    final boolean fixedNumPartitions = ingestionSchema.getTuningConfig().getNumShards() != null;
+    final boolean fixedIntervals = ingestionSchema.getDataSchema()
+                                                  .getGranularitySpec()
+                                                  .bucketIntervals()
+                                                  .isPresent()
+                                   && !ingestionSchema.getTuningConfig().isForceExtendableShardSpecs()
+                                   && !ingestionSchema.getIOConfig().isAppendToExisting();
 
-    final Map<Interval, List<ShardSpec>> shardSpecs = Maps.newHashMap();
+    final Set<Interval> intervals;
+    if (fixedIntervals) {
+      log.info("intervals provided, skipping determine partition scan");
+      intervals = ingestionSchema.getDataSchema()
+                                 .getGranularitySpec()
+                                 .bucketIntervals()
+                                 .get();
+    } else {
+      // determine intervals containing data
+      log.info("Determining intervals");
+      intervals = new HashSet<>();
+      long determineIntervalsStartMillis = System.currentTimeMillis();
 
-    // if we were given number of shards per interval and the intervals, we don't need to scan the data
-    if (!determineNumPartitions && !determineIntervals) {
-      log.info("numShards and intervals provided, skipping determine partition scan");
-      final SortedSet<Interval> intervals = ingestionSchema.getDataSchema()
-                                                           .getGranularitySpec()
-                                                           .bucketIntervals()
-                                                           .get();
+      try (final Firehose firehose = firehoseFactory.connect(ingestionSchema.getDataSchema().getParser(), firehoseTempDir)) {
+        while (firehose.hasMore()) {
+          final InputRow inputRow = firehose.nextRow();
+          final Interval interval = granularitySpec.getSegmentGranularity().bucket(inputRow.getTimestamp());
+
+          intervals.add(interval);
+        }
+      }
+
+      log.info("Found intervals in %,dms", System.currentTimeMillis() - determineIntervalsStartMillis);
+    }
+
+    if (fixedNumPartitions) {
       final int numShards = ingestionSchema.getTuningConfig().getNumShards();
+      final Map<Interval, List<ShardSpec>> intervalToShardSpecs = new HashMap<>();
 
       for (Interval interval : intervals) {
         final List<ShardSpec> intervalShardSpecs = Lists.newArrayListWithCapacity(numShards);
@@ -252,100 +269,78 @@ public class IndexTask extends AbstractTask
         } else {
           intervalShardSpecs.add(NoneShardSpec.instance());
         }
-        shardSpecs.put(interval, intervalShardSpecs);
+        intervalToShardSpecs.put(interval, intervalShardSpecs);
       }
 
-      return shardSpecs;
-    }
+      return new ShardSpecs()
+      {
 
-    // determine intervals containing data and prime HLL collectors
-    final Map<Interval, Optional<HyperLogLogCollector>> hllCollectors = Maps.newHashMap();
-    int thrownAway = 0;
+        @Override
+        public Collection<Interval> getIntervals()
+        {
+          return intervalToShardSpecs.keySet();
+        }
 
-    log.info("Determining intervals and shardSpecs");
-    long determineShardSpecsStartMillis = System.currentTimeMillis();
-    try (final Firehose firehose = firehoseFactory.connect(
-        ingestionSchema.getDataSchema().getParser(),
-        firehoseTempDir)
-    ) {
-      while (firehose.hasMore()) {
-        final InputRow inputRow = firehose.nextRow();
+        @Override
+        public boolean isExtendable()
+        {
+          return false;
+        }
 
-        final Interval interval;
-        if (determineIntervals) {
-          interval = granularitySpec.getSegmentGranularity().bucket(inputRow.getTimestamp());
-        } else {
-          final Optional<Interval> optInterval = granularitySpec.bucketInterval(inputRow.getTimestamp());
-          if (!optInterval.isPresent()) {
-            thrownAway++;
-            continue;
+        @Override
+        public ShardSpec getShardSpec(Interval interval, long timestamp, InputRow row)
+        {
+          final List<ShardSpec> shardSpecs = intervalToShardSpecs.get(interval);
+          if (shardSpecs == null || shardSpecs.isEmpty()) {
+            throw new ISE("Failed to get shardSpec for interval[%s]", interval);
           }
-          interval = optInterval.get();
+          return shardSpecs.get(0).getLookup(shardSpecs).getShardSpec(timestamp, row);
         }
 
-        if (!determineNumPartitions) {
-          // we don't need to determine partitions but we still need to determine intervals, so add an Optional.absent()
-          // for the interval and don't instantiate a HLL collector
-          if (!hllCollectors.containsKey(interval)) {
-            hllCollectors.put(interval, Optional.<HyperLogLogCollector>absent());
-          }
-          continue;
+        @Override
+        public void updateShardSpec(Interval interval)
+        {
+          // do nothing
+        }
+      };
+    } else {
+      final Map<Interval, LinearShardSpec> shardSpecMap = intervals.stream()
+          .collect(Collectors.toMap(interval -> interval, key -> new LinearShardSpec(0)));
+      return new ShardSpecs()
+      {
+        @Override
+        public Collection<Interval> getIntervals()
+        {
+          return shardSpecMap.keySet();
         }
 
-        if (!hllCollectors.containsKey(interval)) {
-          hllCollectors.put(interval, Optional.of(HyperLogLogCollector.makeLatestCollector()));
+        @Override
+        public boolean isExtendable()
+        {
+          return true;
         }
 
-        List<Object> groupKey = Rows.toGroupKey(
-            queryGranularity.bucketStart(inputRow.getTimestamp()).getMillis(),
-            inputRow
-        );
-        hllCollectors.get(interval).get().add(hashFunction.hashBytes(jsonMapper.writeValueAsBytes(groupKey)).asBytes());
-      }
+        @Override
+        public ShardSpec getShardSpec(Interval interval, long timestamp, InputRow row)
+        {
+          return shardSpecMap.get(interval);
+        }
+
+        @Override
+        public void updateShardSpec(Interval interval)
+        {
+          final LinearShardSpec previous = shardSpecMap.get(interval);
+          Preconditions.checkNotNull(previous, "previous shardSpec for interval[%s]", interval);
+          shardSpecMap.put(interval, new LinearShardSpec(previous.getPartitionNum() + 1));
+        }
+      };
     }
-
-    if (thrownAway > 0) {
-      log.warn("Unable to to find a matching interval for [%,d] events", thrownAway);
-    }
-
-    final ImmutableSortedMap<Interval, Optional<HyperLogLogCollector>> sortedMap = ImmutableSortedMap.copyOf(
-        hllCollectors,
-        Comparators.intervalsByStartThenEnd()
-    );
-
-    for (final Map.Entry<Interval, Optional<HyperLogLogCollector>> entry : sortedMap.entrySet()) {
-      final Interval interval = entry.getKey();
-      final Optional<HyperLogLogCollector> collector = entry.getValue();
-
-      final int numShards;
-      if (determineNumPartitions) {
-        final long numRows = new Double(collector.get().estimateCardinality()).longValue();
-        numShards = (int) Math.ceil((double) numRows / ingestionSchema.getTuningConfig().getTargetPartitionSize());
-        log.info("Estimated [%,d] rows of data for interval [%s], creating [%,d] shards", numRows, interval, numShards);
-      } else {
-        numShards = ingestionSchema.getTuningConfig().getNumShards();
-        log.info("Creating [%,d] shards for interval [%s]", numShards, interval);
-      }
-
-      final List<ShardSpec> intervalShardSpecs = Lists.newArrayListWithCapacity(numShards);
-      if (numShards > 1) {
-        for (int i = 0; i < numShards; i++) {
-          intervalShardSpecs.add(new HashBasedNumberedShardSpec(i, numShards, null, jsonMapper));
-        }
-      } else {
-        intervalShardSpecs.add(NoneShardSpec.instance());
-      }
-      shardSpecs.put(interval, intervalShardSpecs);
-    }
-    log.info("Found intervals and shardSpecs in %,dms", System.currentTimeMillis() - determineShardSpecsStartMillis);
-
-    return shardSpecs;
   }
 
   private boolean generateAndPublishSegments(
       final TaskToolbox toolbox,
       final DataSchema dataSchema,
-      final Map<Interval, List<ShardSpec>> shardSpecs,
+      final ShardSpecs shardSpecs,
       final String version,
       final FirehoseFactory firehoseFactory,
       final File firehoseTempDir
@@ -357,7 +352,6 @@ public class IndexTask extends AbstractTask
         dataSchema, new RealtimeIOConfig(null, null, null), null
     );
     final FireDepartmentMetrics fireDepartmentMetrics = fireDepartmentForMetrics.getMetrics();
-    final Map<String, ShardSpec> sequenceNameToShardSpecMap = Maps.newHashMap();
 
     if (toolbox.getMonitorScheduler() != null) {
       toolbox.getMonitorScheduler().addMonitor(
@@ -372,24 +366,18 @@ public class IndexTask extends AbstractTask
     if (ingestionSchema.getIOConfig().isAppendToExisting()) {
       segmentAllocator = new ActionBasedSegmentAllocator(toolbox.getTaskActionClient(), dataSchema);
     } else {
-      segmentAllocator = new SegmentAllocator()
-      {
-        @Override
-        public SegmentIdentifier allocate(DateTime timestamp, String sequenceName, String previousSegmentId)
-            throws IOException
-        {
-          Optional<Interval> interval = granularitySpec.bucketInterval(timestamp);
-          if (!interval.isPresent()) {
-            throw new ISE("Could not find interval for timestamp [%s]", timestamp);
-          }
-
-          ShardSpec shardSpec = sequenceNameToShardSpecMap.get(sequenceName);
-          if (shardSpec == null) {
-            throw new ISE("Could not find ShardSpec for sequenceName [%s]", sequenceName);
-          }
-
-          return new SegmentIdentifier(getDataSource(), interval.get(), version, shardSpec);
+      segmentAllocator = (timestamp, row, sequenceName, previousSegmentId) -> {
+        Optional<Interval> interval = granularitySpec.bucketInterval(timestamp);
+        if (!interval.isPresent()) {
+          throw new ISE("Could not find interval for timestamp [%s]", timestamp);
         }
+
+        ShardSpec shardSpec = shardSpecs.getShardSpec(interval.get(), timestamp.getMillis(), row);
+        if (shardSpec == null) {
+          throw new ISE("Could not find ShardSpec for sequenceName [%s]", sequenceName);
+        }
+
+        return new SegmentIdentifier(getDataSource(), interval.get(), version, shardSpec);
       };
     }
 
@@ -399,12 +387,16 @@ public class IndexTask extends AbstractTask
             appenderator,
             toolbox,
             segmentAllocator,
-            fireDepartmentMetrics
+            fireDepartmentMetrics,
+            ingestionSchema.getTuningConfig()
         );
         final Firehose firehose = firehoseFactory.connect(dataSchema.getParser(), firehoseTempDir)
     ) {
       final Supplier<Committer> committerSupplier = Committers.supplierFromFirehose(firehose);
-      final Map<Interval, ShardSpecLookup> shardSpecLookups = Maps.newHashMap();
+      final TransactionalSegmentPublisher publisher = (segments, commitMetadata) -> {
+        final SegmentTransactionalInsertAction action = new SegmentTransactionalInsertAction(segments, null, null);
+        return toolbox.getTaskActionClient().submit(action).isSuccess();
+      };
 
       if (driver.startJob() != null) {
         driver.clear();
@@ -422,36 +414,15 @@ public class IndexTask extends AbstractTask
             }
 
             final Interval interval = optInterval.get();
-            if (!shardSpecLookups.containsKey(interval)) {
-              final List<ShardSpec> intervalShardSpecs = shardSpecs.get(interval);
-              if (intervalShardSpecs == null || intervalShardSpecs.isEmpty()) {
-                throw new ISE("Failed to get shardSpec for interval[%s]", interval);
-              }
-              shardSpecLookups.put(interval, intervalShardSpecs.get(0).getLookup(intervalShardSpecs));
-            }
-
-            final ShardSpec shardSpec = shardSpecLookups.get(interval)
-                                                        .getShardSpec(inputRow.getTimestampFromEpoch(), inputRow);
-
-            final String sequenceName = String.format("index_%s_%s_%d", interval, version, shardSpec.getPartitionNum());
-
-            if (!sequenceNameToShardSpecMap.containsKey(sequenceName)) {
-              final ShardSpec shardSpecForPublishing = ingestionSchema.getTuningConfig().isForceExtendableShardSpecs()
-                                                       || ingestionSchema.getIOConfig().isAppendToExisting()
-                                                       ? new NumberedShardSpec(
-                  shardSpec.getPartitionNum(),
-                  shardSpecs.get(interval).size()
-              )
-                                                       : shardSpec;
-
-              sequenceNameToShardSpecMap.put(sequenceName, shardSpecForPublishing);
-            }
-
-            final SegmentIdentifier identifier = driver.add(inputRow, sequenceName, committerSupplier);
+            final String sequenceName = Appenderators.getSequenceName(interval, version, shardSpecs.getShardSpec(interval, inputRow.getTimestampFromEpoch(), inputRow));
+            final Pair<SegmentIdentifier, List<SegmentIdentifier>> pair = driver.add(inputRow, sequenceName, committerSupplier, publisher, shardSpecs.isExtendable());
+            final SegmentIdentifier identifier = pair.lhs;
+            final List<SegmentIdentifier> publishedSegments = pair.rhs;
 
             if (identifier == null) {
               throw new ISE("Could not allocate segment for row with timestamp[%s]", inputRow.getTimestamp());
             }
+            publishedSegments.forEach(segmentId -> shardSpecs.updateShardSpec(segmentId.getInterval()));
 
             fireDepartmentMetrics.incrementProcessed();
           }
@@ -468,17 +439,7 @@ public class IndexTask extends AbstractTask
         driver.persist(committerSupplier.get());
       }
 
-      final TransactionalSegmentPublisher publisher = new TransactionalSegmentPublisher()
-      {
-        @Override
-        public boolean publishSegments(Set<DataSegment> segments, Object commitMetadata) throws IOException
-        {
-          final SegmentTransactionalInsertAction action = new SegmentTransactionalInsertAction(segments, null, null);
-          return toolbox.getTaskActionClient().submit(action).isSuccess();
-        }
-      };
-
-      final SegmentsAndMetadata published = driver.finish(publisher, committerSupplier.get());
+      final SegmentsAndMetadata published = driver.publishAndWaitHandoff(publisher, committerSupplier.get());
       if (published == null) {
         log.error("Failed to publish segments, aborting!");
         return false;
@@ -520,7 +481,8 @@ public class IndexTask extends AbstractTask
       final Appenderator appenderator,
       final TaskToolbox toolbox,
       final SegmentAllocator segmentAllocator,
-      final FireDepartmentMetrics metrics
+      final FireDepartmentMetrics metrics,
+      final IndexTuningConfig tuningConfig
   )
   {
     return new FiniteAppenderatorDriver(
@@ -529,10 +491,53 @@ public class IndexTask extends AbstractTask
         new NoopSegmentHandoffNotifierFactory(), // don't wait for handoff since we don't serve queries
         new ActionBasedUsedSegmentChecker(toolbox.getTaskActionClient()),
         toolbox.getObjectMapper(),
-        Integer.MAX_VALUE, // rows for a partition is already determined by the shardSpec
+        // If targetPartitionSize is null, numShards must be set which means intervals are already partitioned with
+        // proper shardSpecs. See determineShardSpecs().
+        tuningConfig.getTargetPartitionSize() == null ? Integer.MAX_VALUE : tuningConfig.getTargetPartitionSize(),
+        tuningConfig.getMaxPersistedSegmentsBytes(),
         0,
         metrics
     );
+  }
+
+  /**
+   * This interface represents a map of (Interval, ShardSpec) and is used for easy shardSpec generation.  The most
+   * important method is {@link #updateShardSpec(Interval)} which updates the map according to the type of shardSpec.
+   */
+  private interface ShardSpecs
+  {
+    /**
+     * Return the key set of the underlying map.
+     *
+     * @return a set of intervals
+     */
+    Collection<Interval> getIntervals();
+
+    /**
+     * Indicate that the type of shardSpecs is extendable like {@link LinearShardSpec}.
+     *
+     * @return true if the type of shardSpecs is extendable
+     */
+    boolean isExtendable();
+
+    /**
+     * Return a shardSpec for the given interval, timestamp and input row.
+     *
+     * @param interval  interval for shardSpec
+     * @param timestamp timestamp of input row
+     * @param row       input row
+     * @return a shardSpec
+     */
+    ShardSpec getShardSpec(Interval interval, long timestamp, InputRow row);
+
+    /**
+     * Update the shardSpec of the given interval.  When the type of shardSpecs is extendable, this method must update
+     * the shardSpec properly.  For example, if the {@link LinearShardSpec} is used, an implementation of this method
+     * may replace the shardSpec of the given interval with a new one having a greater partitionNum.
+     *
+     * @param interval interval for shardSpec to be updated
+     */
+    void updateShardSpec(Interval interval);
   }
 
   public static class IndexIngestionSpec extends IngestionSpec<IndexIOConfig, IndexTuningConfig>
@@ -554,7 +559,7 @@ public class IndexTask extends AbstractTask
       this.ioConfig = ioConfig;
       this.tuningConfig = tuningConfig == null
                           ?
-                          new IndexTuningConfig(null, null, null, null, null, null, null, null, (File) null)
+                          new IndexTuningConfig(null, null, null, null, null, null, null, null, null, (File) null)
                           : tuningConfig;
     }
 
@@ -615,6 +620,7 @@ public class IndexTask extends AbstractTask
   public static class IndexTuningConfig implements TuningConfig, AppenderatorConfig
   {
     private static final int DEFAULT_MAX_ROWS_IN_MEMORY = 75000;
+    private static final long DEFAULT_MAX_PERSISTED_SEGMENTS_BYTES = 1024 * 1024 * 1024;
     private static final IndexSpec DEFAULT_INDEX_SPEC = new IndexSpec();
     private static final int DEFAULT_MAX_PENDING_PERSISTS = 0;
     private static final boolean DEFAULT_BUILD_V9_DIRECTLY = true;
@@ -625,6 +631,7 @@ public class IndexTask extends AbstractTask
 
     private final Integer targetPartitionSize;
     private final int maxRowsInMemory;
+    private final long maxPersistedSegmentsBytes;
     private final Integer numShards;
     private final IndexSpec indexSpec;
     private final File basePersistDirectory;
@@ -637,6 +644,7 @@ public class IndexTask extends AbstractTask
     public IndexTuningConfig(
         @JsonProperty("targetPartitionSize") @Nullable Integer targetPartitionSize,
         @JsonProperty("maxRowsInMemory") @Nullable Integer maxRowsInMemory,
+        @JsonProperty("maxPersistedSegmentsBytes") @Nullable Long maxPersistedSegmentsBytes,
         @JsonProperty("rowFlushBoundary") @Nullable Integer rowFlushBoundary_forBackCompatibility, // DEPRECATED
         @JsonProperty("numShards") @Nullable Integer numShards,
         @JsonProperty("indexSpec") @Nullable IndexSpec indexSpec,
@@ -649,6 +657,7 @@ public class IndexTask extends AbstractTask
       this(
           targetPartitionSize,
           maxRowsInMemory != null ? maxRowsInMemory : rowFlushBoundary_forBackCompatibility,
+          maxPersistedSegmentsBytes,
           numShards,
           indexSpec,
           maxPendingPersists,
@@ -662,6 +671,7 @@ public class IndexTask extends AbstractTask
     private IndexTuningConfig(
         @Nullable Integer targetPartitionSize,
         @Nullable Integer maxRowsInMemory,
+        @Nullable Long maxPersistedSegmentsBytes,
         @Nullable Integer numShards,
         @Nullable IndexSpec indexSpec,
         @Nullable Integer maxPendingPersists,
@@ -682,6 +692,9 @@ public class IndexTask extends AbstractTask
                                     ? DEFAULT_TARGET_PARTITION_SIZE
                                     : targetPartitionSize);
       this.maxRowsInMemory = maxRowsInMemory == null ? DEFAULT_MAX_ROWS_IN_MEMORY : maxRowsInMemory;
+      this.maxPersistedSegmentsBytes = maxPersistedSegmentsBytes == null
+                                       ? DEFAULT_MAX_PERSISTED_SEGMENTS_BYTES
+                                       : maxPersistedSegmentsBytes;
       this.numShards = numShards == null || numShards.equals(-1) ? null : numShards;
       this.indexSpec = indexSpec == null ? DEFAULT_INDEX_SPEC : indexSpec;
       this.maxPendingPersists = maxPendingPersists == null ? DEFAULT_MAX_PENDING_PERSISTS : maxPendingPersists;
@@ -700,6 +713,7 @@ public class IndexTask extends AbstractTask
       return new IndexTuningConfig(
           targetPartitionSize,
           maxRowsInMemory,
+          maxPersistedSegmentsBytes,
           numShards,
           indexSpec,
           maxPendingPersists,
@@ -721,6 +735,13 @@ public class IndexTask extends AbstractTask
     public int getMaxRowsInMemory()
     {
       return maxRowsInMemory;
+    }
+
+    @JsonProperty
+    @Override
+    public long getMaxPersistedSegmentsBytes()
+    {
+      return maxPersistedSegmentsBytes;
     }
 
     @JsonProperty
