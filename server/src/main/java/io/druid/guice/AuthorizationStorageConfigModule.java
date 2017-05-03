@@ -17,21 +17,17 @@
  * under the License.
  */
 
-package io.druid.server.security;
+package io.druid.guice;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
+import com.google.inject.Binder;
+import com.google.inject.Module;
+import io.druid.server.security.db.AuthorizationStorageConnectorConfig;
 
-public enum Action
+public class AuthorizationStorageConfigModule implements Module
 {
-  READ,
-  WRITE;
-
-  @JsonCreator
-  public static Action fromString(String name)
+  @Override
+  public void configure(Binder binder)
   {
-    if (name == null) {
-      return null;
-    }
-    return valueOf(name.toUpperCase());
+    JsonConfigProvider.bind(binder, "druid.authorization.storage.connector", AuthorizationStorageConnectorConfig.class);
   }
 }

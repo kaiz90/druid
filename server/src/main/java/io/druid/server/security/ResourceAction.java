@@ -20,18 +20,32 @@
 package io.druid.server.security;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
-public enum Action
+public class ResourceAction
 {
-  READ,
-  WRITE;
+  private final Resource resource;
+  private final Action action;
 
   @JsonCreator
-  public static Action fromString(String name)
+  public ResourceAction(
+      @JsonProperty("resource") Resource resource,
+      @JsonProperty("action") Action action
+  )
   {
-    if (name == null) {
-      return null;
-    }
-    return valueOf(name.toUpperCase());
+    this.resource = resource;
+    this.action = action;
+  }
+
+  @JsonProperty
+  public Resource getResource()
+  {
+    return resource;
+  }
+
+  @JsonProperty
+  public Action getAction()
+  {
+    return action;
   }
 }

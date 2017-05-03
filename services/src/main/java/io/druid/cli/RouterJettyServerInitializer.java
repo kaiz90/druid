@@ -26,6 +26,7 @@ import io.druid.guice.http.DruidHttpClientConfig;
 import io.druid.server.AsyncQueryForwardingServlet;
 import io.druid.server.initialization.jetty.JettyServerInitUtils;
 import io.druid.server.initialization.jetty.JettyServerInitializer;
+import io.druid.server.security.AuthenticationUtils;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.HandlerList;
@@ -63,7 +64,15 @@ public class RouterJettyServerInitializer implements JettyServerInitializer
     sh.setInitParameter("maxThreads", Integer.toString(httpClientConfig.getNumMaxThreads()));
 
     root.addServlet(sh, "/druid/v2/*");
+
+    // Add the authentication filter first
+    AuthenticationUtils.addBasicAuthenticationFilter(root, injector);
+
     JettyServerInitUtils.addExtensionFilters(root, injector);
+
+    // Check that requests were authorized before sending responses
+    AuthenticationUtils.addPreResponseAuthorizationCheckFilter(root, injector);
+
     // Can't use '/*' here because of Guice conflicts with AsyncQueryForwardingServlet path
     root.addFilter(GuiceFilter.class, "/status/*", null);
 

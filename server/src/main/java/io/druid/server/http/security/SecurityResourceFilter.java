@@ -19,6 +19,7 @@
 
 package io.druid.server.http.security;
 
+import com.google.common.collect.ImmutableList;
 import com.google.inject.Inject;
 import com.sun.jersey.spi.container.ContainerRequest;
 import io.druid.server.security.Access;
@@ -30,20 +31,12 @@ import io.druid.server.security.ResourceType;
 
 import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.Response;
+import java.util.List;
 
-/**
- * Use this ResourceFilter at end points where Druid Cluster configuration is read or written
- * Here are some example paths where this filter is used -
- * - druid/worker/v1
- * - druid/indexer/v1
- * - druid/coordinator/v1/config
- * Note - Currently the resource name for all end points is set to "CONFIG" however if more fine grained access control
- * is required the resource name can be set to specific config properties.
- */
-public class ConfigResourceFilter extends AbstractResourceFilter
+public class SecurityResourceFilter extends AbstractResourceFilter
 {
   @Inject
-  public ConfigResourceFilter(AuthConfig authConfig)
+  public SecurityResourceFilter(AuthConfig authConfig)
   {
     super(authConfig);
   }
@@ -54,7 +47,7 @@ public class ConfigResourceFilter extends AbstractResourceFilter
     if (getAuthConfig().isEnabled()) {
       // This is an experimental feature, see - https://github.com/druid-io/druid/pull/2424
       final ResourceAction resourceAction = new ResourceAction(
-          new Resource("CONFIG", ResourceType.CONFIG),
+          new Resource("security", ResourceType.CONFIG),
           getAction(request)
       );
 
@@ -77,8 +70,12 @@ public class ConfigResourceFilter extends AbstractResourceFilter
   @Override
   public boolean isApplicable(String requestPath)
   {
-    return requestPath.startsWith("druid/worker/v1") ||
-           requestPath.startsWith("druid/indexer/v1") ||
-           requestPath.startsWith("druid/coordinator/v1/config");
+    List<String> applicablePaths = ImmutableList.of("druid/coordinator/v1/security/");
+    for (String path : applicablePaths) {
+      if(requestPath.startsWith(path) && !requestPath.equals(path)) {
+        return true;
+      }
+    }
+    return false;
   }
 }

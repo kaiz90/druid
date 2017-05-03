@@ -23,6 +23,7 @@ import com.google.inject.Injector;
 import com.google.inject.servlet.GuiceFilter;
 import io.druid.server.initialization.jetty.JettyServerInitUtils;
 import io.druid.server.initialization.jetty.JettyServerInitializer;
+import io.druid.server.security.AuthenticationUtils;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.DefaultHandler;
@@ -40,7 +41,15 @@ class MiddleManagerJettyServerInitializer implements JettyServerInitializer
   {
     final ServletContextHandler root = new ServletContextHandler(ServletContextHandler.SESSIONS);
     root.addServlet(new ServletHolder(new DefaultServlet()), "/*");
+
+    // Add the authentication filter first
+    AuthenticationUtils.addBasicAuthenticationFilter(root, injector);
+
     JettyServerInitUtils.addExtensionFilters(root, injector);
+
+    // Check that requests were authorized before sending responses
+    AuthenticationUtils.addPreResponseAuthorizationCheckFilter(root, injector);
+
     root.addFilter(GuiceFilter.class, "/*", null);
 
     final HandlerList handlerList = new HandlerList();

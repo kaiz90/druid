@@ -70,6 +70,7 @@ import io.druid.server.http.RedirectInfo;
 import io.druid.server.http.RulesResource;
 import io.druid.server.http.ServersResource;
 import io.druid.server.http.TiersResource;
+import io.druid.server.http.security.SecurityResource;
 import io.druid.server.initialization.jetty.JettyServerInitializer;
 import io.druid.server.listener.announcer.ListenerDiscoverer;
 import io.druid.server.lookup.cache.LookupCoordinatorManager;
@@ -182,6 +183,7 @@ public class CliCoordinator extends ServerRunnable
             Jerseys.addResource(binder, MetadataResource.class);
             Jerseys.addResource(binder, IntervalsResource.class);
             Jerseys.addResource(binder, LookupCoordinatorResource.class);
+            Jerseys.addResource(binder, SecurityResource.class);
 
             LifecycleModule.register(binder, Server.class);
             LifecycleModule.register(binder, DatasourcesResource.class);

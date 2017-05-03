@@ -62,6 +62,8 @@ import io.druid.query.QueryToolChestWarehouse;
 import io.druid.query.QueryWatcher;
 import io.druid.query.Result;
 import io.druid.query.aggregation.MetricManipulatorFns;
+import io.druid.server.security.AuthConfig;
+import io.druid.server.security.AuthenticationUtils;
 import org.jboss.netty.buffer.ChannelBuffer;
 import org.jboss.netty.buffer.ChannelBufferInputStream;
 import org.jboss.netty.handler.codec.http.HttpChunk;
@@ -101,6 +103,7 @@ public class DirectDruidClient<T> implements QueryRunner<T>
   private final HttpClient httpClient;
   private final String host;
   private final ServiceEmitter emitter;
+  private final AuthConfig authConfig;
 
   private final AtomicInteger openConnections;
   private final boolean isSmile;
@@ -111,7 +114,8 @@ public class DirectDruidClient<T> implements QueryRunner<T>
       ObjectMapper objectMapper,
       HttpClient httpClient,
       String host,
-      ServiceEmitter emitter
+      ServiceEmitter emitter,
+      AuthConfig authConfig
   )
   {
     this.warehouse = warehouse;
@@ -120,6 +124,7 @@ public class DirectDruidClient<T> implements QueryRunner<T>
     this.httpClient = httpClient;
     this.host = host;
     this.emitter = emitter;
+    this.authConfig = authConfig;
 
     this.isSmile = this.objectMapper.getFactory() instanceof SmileFactory;
     this.openConnections = new AtomicInteger();
@@ -321,17 +326,27 @@ public class DirectDruidClient<T> implements QueryRunner<T>
           }
         }
       };
-      future = httpClient.go(
-          new Request(
-              HttpMethod.POST,
-              new URL(url)
-          ).setContent(objectMapper.writeValueAsBytes(query))
-           .setHeader(
-               HttpHeaders.Names.CONTENT_TYPE,
-               isSmile ? SmileMediaTypes.APPLICATION_JACKSON_SMILE : MediaType.APPLICATION_JSON
-           ),
-          responseHandler
-      );
+
+      Request newReq = new Request(
+          HttpMethod.POST,
+          new URL(url)
+      ).setContent(objectMapper.writeValueAsBytes(query))
+       .setHeader(
+           HttpHeaders.Names.CONTENT_TYPE,
+           isSmile ? SmileMediaTypes.APPLICATION_JACKSON_SMILE : MediaType.APPLICATION_JSON
+       );
+
+      if (authConfig.isEnableBasicAuthentication()) {
+        if (authConfig.getSystemPrincipal() != null) {
+          if (authConfig.getSystemPrincipalSecret() != null) {
+            String basicAuthHeader = AuthenticationUtils.buildHttpBasicAuthHeader(authConfig.getSystemPrincipal(),
+                                                                                  authConfig.getSystemPrincipalSecret());
+            newReq.addHeader("Authorization", basicAuthHeader);
+          }
+        }
+      }
+
+      future = httpClient.go(newReq, responseHandler);
 
       queryWatcher.registerQuery(query, future);
 

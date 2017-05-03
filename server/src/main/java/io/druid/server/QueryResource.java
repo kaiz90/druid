@@ -22,17 +22,16 @@ package io.druid.server;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectWriter;
 import com.fasterxml.jackson.jaxrs.smile.SmileMediaTypes;
-import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.MapMaker;
+import com.google.common.collect.Sets;
 import com.google.common.io.CountingOutputStream;
 import com.google.inject.Inject;
 import com.metamx.emitter.EmittingLogger;
 import com.metamx.emitter.service.ServiceEmitter;
 import io.druid.guice.annotations.Json;
 import io.druid.guice.annotations.Smile;
-import io.druid.java.util.common.ISE;
 import io.druid.java.util.common.guava.Sequence;
 import io.druid.java.util.common.guava.Sequences;
 import io.druid.java.util.common.guava.Yielder;
@@ -48,11 +47,8 @@ import io.druid.server.initialization.ServerConfig;
 import io.druid.server.log.RequestLogger;
 import io.druid.server.metrics.QueryCountStatsProvider;
 import io.druid.server.security.Access;
-import io.druid.server.security.Action;
 import io.druid.server.security.AuthConfig;
-import io.druid.server.security.AuthorizationInfo;
-import io.druid.server.security.Resource;
-import io.druid.server.security.ResourceType;
+import io.druid.server.security.AuthorizationUtils;
 import org.joda.time.DateTime;
 
 import javax.servlet.http.HttpServletRequest;
@@ -137,24 +133,20 @@ public class QueryResource implements QueryCountStatsProvider
     }
     if (authConfig.isEnabled()) {
       // This is an experimental feature, see - https://github.com/druid-io/druid/pull/2424
-      final AuthorizationInfo authorizationInfo = (AuthorizationInfo) req.getAttribute(AuthConfig.DRUID_AUTH_TOKEN);
-      Preconditions.checkNotNull(
-          authorizationInfo,
-          "Security is enabled but no authorization info found in the request"
-      );
       Set<String> datasources = queryManager.getQueryDatasources(queryId);
       if (datasources == null) {
         log.warn("QueryId [%s] not registered with QueryManager, cannot cancel", queryId);
-      } else {
-        for (String dataSource : datasources) {
-          Access authResult = authorizationInfo.isAuthorized(
-              new Resource(dataSource, ResourceType.DATASOURCE),
-              Action.WRITE
-          );
-          if (!authResult.isAllowed()) {
-            return Response.status(Response.Status.FORBIDDEN).header("Access-Check-Result", authResult).build();
-          }
-        }
+        datasources = Sets.newTreeSet();
+      }
+
+      Access authResult = AuthorizationUtils.authorizeAllResourceActions(
+          req,
+          datasources,
+          AuthorizationUtils.DATASOURCE_WRITE_RA_GENERATOR
+      );
+
+      if (!authResult.isAllowed()) {
+        return Response.status(Response.Status.FORBIDDEN).header("Access-Check-Result", authResult).build();
       }
     }
     queryManager.cancelQuery(queryId);
@@ -203,19 +195,14 @@ public class QueryResource implements QueryCountStatsProvider
 
       if (authConfig.isEnabled()) {
         // This is an experimental feature, see - https://github.com/druid-io/druid/pull/2424
-        AuthorizationInfo authorizationInfo = (AuthorizationInfo) req.getAttribute(AuthConfig.DRUID_AUTH_TOKEN);
-        if (authorizationInfo != null) {
-          for (String dataSource : query.getDataSource().getNames()) {
-            Access authResult = authorizationInfo.isAuthorized(
-                new Resource(dataSource, ResourceType.DATASOURCE),
-                Action.READ
-            );
-            if (!authResult.isAllowed()) {
-              return Response.status(Response.Status.FORBIDDEN).header("Access-Check-Result", authResult).build();
-            }
-          }
-        } else {
-          throw new ISE("WTF?! Security is enabled but no authorization info found in the request");
+        Access authResult = AuthorizationUtils.authorizeAllResourceActions(
+            req,
+            query.getDataSource().getNames(),
+            AuthorizationUtils.DATASOURCE_READ_RA_GENERATOR
+        );
+
+        if (!authResult.isAllowed()) {
+          return Response.status(Response.Status.FORBIDDEN).header("Access-Check-Result", authResult).build();
         }
       }
 

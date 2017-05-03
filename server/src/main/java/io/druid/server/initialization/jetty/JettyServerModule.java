@@ -101,6 +101,11 @@ public class JettyServerModule extends JerseyServletModule
     Multibinder.newSetBinder(binder, Handler.class);
     Multibinder.newSetBinder(binder, ServletFilterHolder.class);
 
+    boolean security = true;
+    if (security) {
+
+    }
+
     MetricsModule.register(binder, JettyMonitor.class);
   }
 

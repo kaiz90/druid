@@ -43,6 +43,7 @@ import io.druid.query.ReflectionQueryToolChestWarehouse;
 import io.druid.query.Result;
 import io.druid.query.timeboundary.TimeBoundaryQuery;
 import io.druid.server.metrics.NoopServiceEmitter;
+import io.druid.server.security.AuthConfig;
 import io.druid.timeline.DataSegment;
 import io.druid.timeline.partition.NoneShardSpec;
 import org.easymock.Capture;
@@ -122,7 +123,8 @@ public class DirectDruidClientTest
         new DefaultObjectMapper(),
         httpClient,
         "foo",
-        new NoopServiceEmitter()
+        new NoopServiceEmitter(),
+        new AuthConfig()
     );
     DirectDruidClient client2 = new DirectDruidClient(
         new ReflectionQueryToolChestWarehouse(),
@@ -130,7 +132,8 @@ public class DirectDruidClientTest
         new DefaultObjectMapper(),
         httpClient,
         "foo2",
-        new NoopServiceEmitter()
+        new NoopServiceEmitter(),
+        new AuthConfig()
     );
 
     QueryableDruidServer queryableDruidServer1 = new QueryableDruidServer(
@@ -232,7 +235,8 @@ public class DirectDruidClientTest
         new DefaultObjectMapper(),
         httpClient,
         "foo",
-        new NoopServiceEmitter()
+        new NoopServiceEmitter(),
+        new AuthConfig()
     );
 
     QueryableDruidServer queryableDruidServer1 = new QueryableDruidServer(
@@ -301,7 +305,8 @@ public class DirectDruidClientTest
         new DefaultObjectMapper(),
         httpClient,
         hostName,
-        new NoopServiceEmitter()
+        new NoopServiceEmitter(),
+        new AuthConfig()
     );
 
     QueryableDruidServer queryableDruidServer = new QueryableDruidServer(

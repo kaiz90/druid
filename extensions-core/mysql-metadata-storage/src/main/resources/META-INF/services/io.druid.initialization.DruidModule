@@ -1,1 +1,2 @@
 io.druid.metadata.storage.mysql.MySQLMetadataStorageModule
+io.druid.metadata.storage.mysql.MySQLSecurityStorageDruidModule

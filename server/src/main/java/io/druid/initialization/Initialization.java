@@ -34,6 +34,7 @@ import io.druid.curator.CuratorModule;
 import io.druid.curator.discovery.DiscoveryModule;
 import io.druid.guice.AWSModule;
 import io.druid.guice.AnnouncerModule;
+import io.druid.guice.AuthorizationStorageConfigModule;
 import io.druid.guice.CoordinatorDiscoveryModule;
 import io.druid.guice.DruidProcessingModule;
 import io.druid.guice.DruidSecondaryModule;
@@ -63,6 +64,7 @@ import io.druid.metadata.storage.derby.DerbyMetadataStorageDruidModule;
 import io.druid.server.initialization.EmitterModule;
 import io.druid.server.initialization.jetty.JettyServerModule;
 import io.druid.server.metrics.MetricsModule;
+import io.druid.server.security.db.DerbySecurityStorageDruidModule;
 import org.apache.commons.io.FileUtils;
 import org.eclipse.aether.artifact.DefaultArtifact;
 
@@ -343,6 +345,8 @@ public class Initialization
         new ServerViewModule(),
         new MetadataConfigModule(),
         new DerbyMetadataStorageDruidModule(),
+        new AuthorizationStorageConfigModule(),
+        new DerbySecurityStorageDruidModule(),
         new JacksonConfigManagerModule(),
         new IndexingServiceDiscoveryModule(),
         new CoordinatorDiscoveryModule(),

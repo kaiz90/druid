@@ -30,16 +30,30 @@ public class AuthConfig
    * */
   public static final String DRUID_AUTH_TOKEN = "Druid-Auth-Token";
 
+  /**
+   * HTTP attribute set when a static method in AuthorizationUtils performs an authorization check on the request.
+   */
+  public static final String DRUID_AUTH_TOKEN_CHECKED = "Druid-Auth-Token-Checked";
+
   public AuthConfig() {
-    this(false);
+    this(false, false, null, null, false);
   }
 
   @JsonCreator
   public AuthConfig(
-      @JsonProperty("enabled") boolean enabled
+      @JsonProperty("enabled") boolean enabled,
+      @JsonProperty("enableBasicAuthentication") boolean enableBasicAuthentication,
+      @JsonProperty("systemPrincipal") String systemPrincipal,
+      @JsonProperty("systemPrincipalSecret") String systemPrincipalSecret,
+      @JsonProperty("remapAuthNames") boolean remapAuthNames
   ){
     this.enabled = enabled;
+    this.enableBasicAuthentication = enableBasicAuthentication;
+    this.systemPrincipal = systemPrincipal;
+    this.systemPrincipalSecret = systemPrincipalSecret;
+    this.remapAuthNames = remapAuthNames;
   }
+
   /**
    * If druid.auth.enabled is set to true then an implementation of AuthorizationInfo
    * must be provided and it must be set as a request attribute possibly inside the servlet filter
@@ -48,9 +62,41 @@ public class AuthConfig
   @JsonProperty
   private final boolean enabled;
 
+  @JsonProperty
+  private final boolean enableBasicAuthentication;
+
+  @JsonProperty
+  private final String systemPrincipal;
+
+  @JsonProperty
+  private final String systemPrincipalSecret;
+
+  @JsonProperty
+  private final boolean remapAuthNames;
+
   public boolean isEnabled()
   {
     return enabled;
+  }
+
+  public boolean isEnableBasicAuthentication()
+  {
+    return enableBasicAuthentication;
+  }
+
+  public String getSystemPrincipal()
+  {
+    return systemPrincipal;
+  }
+
+  public String getSystemPrincipalSecret()
+  {
+    return systemPrincipalSecret;
+  }
+
+  public boolean isRemapAuthNames()
+  {
+    return remapAuthNames;
   }
 
   @Override
@@ -65,21 +111,27 @@ public class AuthConfig
 
     AuthConfig that = (AuthConfig) o;
 
-    return enabled == that.enabled;
+    if (isEnabled() != that.isEnabled()) {
+      return false;
+    }
+    return isEnableBasicAuthentication() == that.isEnableBasicAuthentication();
 
   }
 
   @Override
   public int hashCode()
   {
-    return (enabled ? 1 : 0);
+    int result = (isEnabled() ? 1 : 0);
+    result = 31 * result + (isEnableBasicAuthentication() ? 1 : 0);
+    return result;
   }
 
   @Override
   public String toString()
   {
     return "AuthConfig{" +
-           "enabled=" + enabled +
+           "enabled=" + enabled + "," +
+           "enableBasicAuthentication=" + enableBasicAuthentication +
            '}';
   }
 }

@@ -106,7 +106,10 @@ public class ResourceFilterTestHelper
         )
     ).anyTimes();
     EasyMock.expect(request.getMethod()).andReturn(requestMethod).anyTimes();
-    EasyMock.expect(req.getAttribute(EasyMock.anyString())).andReturn(authorizationInfo).atLeastOnce();
+    EasyMock.expect(req.getAttribute(AuthConfig.DRUID_AUTH_TOKEN_CHECKED)).andReturn(null).anyTimes();
+    EasyMock.expect(req.getAttribute(AuthConfig.DRUID_AUTH_TOKEN)).andReturn(authorizationInfo).atLeastOnce();
+    req.setAttribute(AuthConfig.DRUID_AUTH_TOKEN_CHECKED, authCheckResult);
+    EasyMock.expectLastCall().anyTimes();
     EasyMock.expect(authorizationInfo.isAuthorized(
         EasyMock.anyObject(Resource.class),
         EasyMock.anyObject(Action.class)
@@ -161,7 +164,7 @@ public class ResourceFilterTestHelper
             for (Key<?> key : mockableKeys) {
               binder.bind((Key<Object>) key).toInstance(EasyMock.createNiceMock(key.getTypeLiteral().getRawType()));
             }
-            binder.bind(AuthConfig.class).toInstance(new AuthConfig(true));
+            binder.bind(AuthConfig.class).toInstance(new AuthConfig(true, false, null, null, false));
           }
         }
     );

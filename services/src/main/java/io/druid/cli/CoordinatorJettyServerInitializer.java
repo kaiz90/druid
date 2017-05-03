@@ -27,6 +27,7 @@ import io.druid.server.http.OverlordProxyServlet;
 import io.druid.server.http.RedirectFilter;
 import io.druid.server.initialization.jetty.JettyServerInitUtils;
 import io.druid.server.initialization.jetty.JettyServerInitializer;
+import io.druid.server.security.AuthenticationUtils;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.HandlerList;
@@ -81,7 +82,14 @@ class CoordinatorJettyServerInitializer implements JettyServerInitializer
       // used for console development
       root.setResourceBase(config.getConsoleStatic());
     }
+
+    // Add the authentication filter first
+    AuthenticationUtils.addBasicAuthenticationFilter(root, injector);
+
     JettyServerInitUtils.addExtensionFilters(root, injector);
+
+    // Check that requests were authorized before sending responses
+    AuthenticationUtils.addPreResponseAuthorizationCheckFilter(root, injector);
 
     // /status should not redirect, so add first
     root.addFilter(GuiceFilter.class, "/status/*", null);

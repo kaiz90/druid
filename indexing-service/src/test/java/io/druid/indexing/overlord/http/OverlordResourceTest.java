@@ -77,8 +77,10 @@ public class OverlordResourceTest
         null,
         null,
         null,
-        new AuthConfig(true)
+        new AuthConfig(true, false, null, null, false)
     );
+
+    EasyMock.expect(req.getAttribute(AuthConfig.DRUID_AUTH_TOKEN_CHECKED)).andReturn(null).anyTimes();
 
     EasyMock.expect(req.getAttribute(AuthConfig.DRUID_AUTH_TOKEN)).andReturn(
         new AuthorizationInfo()
@@ -96,6 +98,15 @@ public class OverlordResourceTest
           }
         }
     );
+
+    req.setAttribute(AuthConfig.DRUID_AUTH_TOKEN_CHECKED, false);
+    EasyMock.expectLastCall().anyTimes();
+
+    req.setAttribute(AuthConfig.DRUID_AUTH_TOKEN_CHECKED, true);
+    EasyMock.expectLastCall().anyTimes();
+
+    //EasyMock.expect(req.getAttribute(AuthConfig.DRUID_AUTH_TOKEN_CHECKED)).andReturn(true).anyTimes();
+
   }
 
   @Test

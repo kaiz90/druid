@@ -44,7 +44,7 @@ import javax.ws.rs.core.Response;
 import java.util.Collection;
 
 @RunWith(Parameterized.class)
-public class SecurityResourceFilterTest extends ResourceFilterTestHelper
+public class OverlordSecurityResourceFilterTest extends ResourceFilterTestHelper
 {
 
   @Parameterized.Parameters
@@ -67,7 +67,7 @@ public class SecurityResourceFilterTest extends ResourceFilterTestHelper
   private static boolean mockedOnce;
   private TaskStorageQueryAdapter tsqa;
 
-  public SecurityResourceFilterTest(
+  public OverlordSecurityResourceFilterTest(
       String requestPath,
       String requestMethod,
       ResourceFilter resourceFilter,
