@@ -510,7 +510,8 @@ public class IndexTaskTest
                             Lists.<SpatialDimensionSchema>newArrayList()
                         ),
                         null,
-                        Arrays.asList("ts", "dim", "val")
+                        Arrays.asList("ts", "dim", "val"),
+                        null
                     ),
                     null
                 ),

@@ -87,7 +87,8 @@ public class LocalFirehoseFactoryTest
                 Lists.newArrayList()
             ),
             ",",
-            Arrays.asList("timestamp", "a")
+            Arrays.asList("timestamp", "a"),
+            null
         ),
         Charsets.UTF_8.name()
     ), null)) {
